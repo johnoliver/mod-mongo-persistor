@@ -1,3 +1,4 @@
+apply from: "gradle/setup.gradle"
 apply from: "gradle/vertx.gradle"
 
 /*
@@ -51,7 +52,6 @@ dependencies {
   provided "com.foo:foo-lib:1.0.1" - if you DON'T want it to be packaged in the module zip
    */
   compile "org.mongodb:mongo-java-driver:$mongoVersion"
-  compile "com.foursquare:fongo:$fongoVersion"
 }
 
 test {
@@ -68,9 +68,10 @@ Please edit the details below.
  */
 def configurePom(def pom) {
   pom.project {
+    name rootProject.name
     description 'MongoDB Persistor Module for Vert.x'
     inceptionYear '2012'
-    packaging 'zip'
+    packaging 'jar'
     url 'https://github.com/vert-x/mod-mongo-persistor'
 
     developers {

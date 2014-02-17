@@ -16,9 +16,9 @@
 
 package org.vertx.mods;
 
-import com.foursquare.fongo.Fongo;
 import com.mongodb.*;
 import com.mongodb.util.JSON;
+
 import org.vertx.java.busmods.BusModBase;
 import org.vertx.java.core.Handler;
 import org.vertx.java.core.eventbus.Message;
@@ -26,14 +26,19 @@ import org.vertx.java.core.json.JsonArray;
 import org.vertx.java.core.json.JsonObject;
 
 import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+
+import javax.net.ssl.SSLSocketFactory;
 
 /**
  * MongoDB Persistor Bus Module<p>
- * Please see the busmods manual for a full description<p>
+ * Please see the README.md for a full descrition<p>
  *
  * @author <a href="http://tfox.org">Tim Fox</a>
  * @author Thomas Risberg
+ * @author Richard Warburton
  */
 public class MongoPersistor extends BusModBase implements Handler<Message<JsonObject>> {
 
@@ -43,84 +48,124 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
   protected String dbName;
   protected String username;
   protected String password;
+  protected boolean autoConnectRetry;
+  protected int socketTimeout;
+  protected boolean useSSL;
 
   protected Mongo mongo;
   protected DB db;
 
+  @Override
   public void start() {
     super.start();
 
     address = getOptionalStringConfig("address", "vertx.mongopersistor");
+
     host = getOptionalStringConfig("host", "localhost");
     port = getOptionalIntConfig("port", 27017);
     dbName = getOptionalStringConfig("db_name", "default_db");
     username = getOptionalStringConfig("username", null);
     password = getOptionalStringConfig("password", null);
-    boolean fake = getOptionalBooleanConfig("fake", false);
+    int poolSize = getOptionalIntConfig("pool_size", 10);
+    autoConnectRetry = getOptionalBooleanConfig("autoConnectRetry", true);
+    socketTimeout = getOptionalIntConfig("socketTimeout", 60000);
+    useSSL = getOptionalBooleanConfig("useSSL", false);
 
-    if (fake) {
-      Fongo fongo = new Fongo("fongo server");
-      db = fongo.getDB(dbName);
-      mongo = fongo.getMongo();
-    } else {
-      try {
-        mongo = new Mongo(host, port);
-        db = mongo.getDB(dbName);
-        if (username != null && password != null) {
-          db.authenticate(username, password.toCharArray());
-        }
-      } catch (UnknownHostException e) {
-        logger.error("Failed to connect to mongo server", e);
+    JsonArray seedsProperty = config.getArray("seeds");
+
+    try {
+      MongoClientOptions.Builder builder = new MongoClientOptions.Builder();
+      builder.connectionsPerHost(poolSize);
+      builder.autoConnectRetry(autoConnectRetry);
+      builder.socketTimeout(socketTimeout);
+
+      if(useSSL) {
+          builder.socketFactory(SSLSocketFactory.getDefault());
       }
-    }
 
+      if (seedsProperty == null) {
+          ServerAddress address = new ServerAddress(host, port);
+          mongo = new MongoClient(address, builder.build());
+      } else {
+          List<ServerAddress> seeds = makeSeeds(seedsProperty);
+          mongo = new MongoClient(seeds, builder.build());
+      }
+
+      db = mongo.getDB(dbName);
+      if (username != null && password != null) {
+        db.authenticate(username, password.toCharArray());
+      }
+    } catch (UnknownHostException e) {
+      logger.error("Failed to connect to mongo server", e);
+    }
     eb.registerHandler(address, this);
   }
 
-  public void stop() {
-    mongo.close();
-  }
+    private List<ServerAddress> makeSeeds(JsonArray seedsProperty) throws UnknownHostException {
+        List<ServerAddress> seeds = new ArrayList<>();
+        for (Object elem : seedsProperty) {
+            JsonObject address = (JsonObject) elem;
+            String host = address.getString("host");
+            int port = address.getInteger("port");
+            seeds.add(new ServerAddress(host, port));
+        }
+        return seeds;
+    }
 
+    @Override
+    public void stop() {
+        if (mongo != null) {
+            mongo.close();
+        }
+    }
+
+  @Override
   public void handle(Message<JsonObject> message) {
 
-    String action = message.body.getString("action");
+    String action = message.body().getString("action");
 
     if (action == null) {
       sendError(message, "action must be specified");
       return;
     }
 
-    switch (action) {
-      case "save":
-        doSave(message);
-        break;
-      case "update":
-        doUpdate(message);
-        break;    
-      case "find":
-        doFind(message);
-        break;
-      case "findone":
-        doFindOne(message);
-        break;
-      case "delete":
-        doDelete(message);
-        break;
-      case "count":
-        doCount(message);
-        break;
-      case "getCollections":
-        getCollections(message);
-        break;
-      case "collectionStats":
-        getCollectionStats(message);
-        break;
-      case "command":
-        runCommand(message);
-        break;
-      default:
-        sendError(message, "Invalid action: " + action);
-        return;
+    try {
+      switch (action) {
+        case "save":
+          doSave(message);
+          break;
+        case "update":
+          doUpdate(message);
+          break;
+        case "find":
+          doFind(message);
+          break;
+        case "findone":
+          doFindOne(message);
+          break;
+        case "delete":
+          doDelete(message);
+          break;
+        case "count":
+          doCount(message);
+          break;
+        case "getCollections":
+          getCollections(message);
+          break;
+        case "dropCollection":
+          dropCollection(message);
+          break;
+        case "collectionStats":
+          getCollectionStats(message);
+          break;
+        case "command":
+          runCommand(message);
+          break;
+        default:
+          sendError(message, "Invalid action: " + action);
+      }
+    } catch (MongoException e) {
+        sendError(message, e.getMessage(), e);
     }
   }
 
@@ -143,6 +188,10 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
     DBCollection coll = db.getCollection(collection);
     DBObject obj = jsonToDBObject(doc);
     WriteConcern writeConcern = WriteConcern.valueOf(getOptionalStringConfig("writeConcern",""));
+    // Backwards compatibility
+    if (writeConcern == null) {
+      writeConcern = WriteConcern.valueOf(getOptionalStringConfig("write_concern",""));
+    }
     if (writeConcern == null) {
       writeConcern = db.getWriteConcern();
     }
@@ -176,12 +225,17 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
       return;
     }
     DBObject objNew = jsonToDBObject(objNewJson);
-    Boolean upsert =  message.body.getBoolean("upsert",false);
-    Boolean multi = message.body.getBoolean("multi",false);
+    Boolean upsert =  message.body().getBoolean("upsert",false);
+    Boolean multi = message.body().getBoolean("multi",false);
     DBCollection coll = db.getCollection(collection);
     WriteConcern writeConcern = WriteConcern.valueOf(getOptionalStringConfig("writeConcern",""));
+    // Backwards compatibility
     if (writeConcern == null) {
-        writeConcern = db.getWriteConcern();
+      writeConcern = WriteConcern.valueOf(getOptionalStringConfig("write_concern",""));
+    }
+
+    if (writeConcern == null) {
+      writeConcern = db.getWriteConcern();
     }
     WriteResult res = coll.update(criteria, objNew, upsert, multi, writeConcern);
     if (res.getError() == null) {
@@ -198,32 +252,35 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
     if (collection == null) {
       return;
     }
-    Integer limit = (Integer)message.body.getNumber("limit");
+    Integer limit = (Integer)message.body().getNumber("limit");
     if (limit == null) {
       limit = -1;
     }
-    Integer skip = (Integer)message.body.getNumber("skip");
-    if(skip == null) {
+    Integer skip = (Integer)message.body().getNumber("skip");
+    if (skip == null) {
       skip = -1;
     }
-
-    Integer batchSize = (Integer)message.body.getNumber("batch_size");
+    Integer batchSize = (Integer)message.body().getNumber("batch_size");
     if (batchSize == null) {
       batchSize = 100;
+    }
+    Integer timeout = (Integer)message.body().getNumber("timeout");
+    if (timeout == null || timeout < 0) {
+      timeout = 10000; // 10 seconds
     }
     JsonObject matcher = getMandatoryObject("matcher", message);
     if (matcher == null) {
       return;
     }
-    JsonObject keys = message.body.getObject("keys");
-    
-    Object sort = message.body.getField("sort");
+    JsonObject keys = message.body().getObject("keys");
+
+    Object sort = message.body().getField("sort");
     DBCollection coll = db.getCollection(collection);
-    DBCursor cursor = (keys == null) ? 
-    			coll.find(jsonToDBObject(matcher)) : 
+    DBCursor cursor = (keys == null) ?
+    			coll.find(jsonToDBObject(matcher)) :
     			coll.find(jsonToDBObject(matcher), jsonToDBObject(keys));
-    if(skip != -1) {
-        cursor.skip(skip);
+    if (skip != -1) {
+      cursor.skip(skip);
     }
     if (limit != -1) {
       cursor.limit(limit);
@@ -231,7 +288,7 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
     if (sort != null) {
       cursor.sort(sortObjectToDBObject(sort));
     }
-    sendBatch(message, cursor, batchSize);
+    sendBatch(message, cursor, batchSize, timeout);
   }
 
   private DBObject sortObjectToDBObject(Object sortObj) {
@@ -256,7 +313,7 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
     }
   }
 
-  private void sendBatch(Message<JsonObject> message, final DBCursor cursor, final int max) {
+  private void sendBatch(Message<JsonObject> message, final DBCursor cursor, final int max, final int timeout) {
     int count = 0;
     JsonArray results = new JsonArray();
     while (cursor.hasNext() && count < max) {
@@ -269,10 +326,11 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
     if (cursor.hasNext()) {
       JsonObject reply = createBatchMessage("more-exist", results);
 
-      // Set a timeout, if the user doesn't reply within 10 secs, close the cursor
-      final long timerID = vertx.setTimer(10000, new Handler<Long>() {
+      // If the user doesn't reply within timeout, close the cursor
+      final long timerID = vertx.setTimer(timeout, new Handler<Long>() {
+        @Override
         public void handle(Long timerID) {
-          container.getLogger().warn("Closing DB cursor on timeout");
+          container.logger().warn("Closing DB cursor on timeout");
           try {
             cursor.close();
           } catch (Exception ignore) {
@@ -280,11 +338,13 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
         }
       });
 
+
       message.reply(reply, new Handler<Message<JsonObject>>() {
+        @Override
         public void handle(Message<JsonObject> msg) {
           vertx.cancelTimer(timerID);
           // Get the next batch
-          sendBatch(msg, cursor, max);
+          sendBatch(msg, cursor, max, timeout);
         }
       });
 
@@ -306,7 +366,8 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
   protected void sendMoreExist(String status, Message<JsonObject> message, JsonObject json) {
     json.putString("status", status);
     message.reply(json, new Handler<Message<JsonObject>>() {
-      public void handle(Message<JsonObject> msg) {
+      @Override
+    public void handle(Message<JsonObject> msg) {
 
       }
     });
@@ -317,8 +378,8 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
     if (collection == null) {
       return;
     }
-    JsonObject matcher = message.body.getObject("matcher");
-    JsonObject keys = message.body.getObject("keys");
+    JsonObject matcher = message.body().getObject("matcher");
+    JsonObject keys = message.body().getObject("keys");
     DBCollection coll = db.getCollection(collection);
     DBObject res;
     if (matcher == null) {
@@ -340,7 +401,7 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
         if (collection == null) {
             return;
         }
-        JsonObject matcher = message.body.getObject("matcher");
+        JsonObject matcher = message.body().getObject("matcher");
         DBCollection coll = db.getCollection(collection);
         long count;
         if (matcher == null) {
@@ -365,6 +426,11 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
     DBCollection coll = db.getCollection(collection);
     DBObject obj = jsonToDBObject(matcher);
     WriteConcern writeConcern = WriteConcern.valueOf(getOptionalStringConfig("writeConcern",""));
+    // Backwards compatibility
+    if (writeConcern == null) {
+      writeConcern = WriteConcern.valueOf(getOptionalStringConfig("write_concern",""));
+    }
+
     if (writeConcern == null) {
       writeConcern = db.getWriteConcern();
     }
@@ -381,16 +447,35 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
     sendOK(message, reply);
   }
 
+  private void dropCollection(Message<JsonObject> message) {
+
+    JsonObject reply = new JsonObject();
+    String collection = getMandatoryString("collection", message);
+
+    if (collection == null) {
+      return;
+    }
+
+    DBCollection coll = db.getCollection(collection);
+
+    try {
+      coll.drop();
+      sendOK(message, reply);
+    } catch (MongoException mongoException) {
+      sendError(message, "exception thrown when attempting to drop collection: " + collection + " \n" + mongoException.getMessage());
+    }
+  }
+
   private void getCollectionStats(Message<JsonObject> message) {
     String collection = getMandatoryString("collection", message);
 
     if (collection == null) {
       return;
     }
-    
+
     DBCollection coll = db.getCollection(collection);
     CommandResult stats = coll.getStats();
-    
+
     JsonObject reply = new JsonObject();
     reply.putObject("stats", new JsonObject(stats.toString()));
     sendOK(message, reply);
@@ -399,15 +484,16 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
 
   private void runCommand(Message<JsonObject> message) {
     JsonObject reply = new JsonObject();
-    
+
     String command = getMandatoryString("command", message);
 
     if (command == null) {
       return;
     }
-    
-    CommandResult result = db.command(command);
-    
+
+    DBObject commandObject = (DBObject) JSON.parse(command);
+    CommandResult result = db.command(commandObject);
+
     reply.putObject("result", new JsonObject(result.toString()));
     sendOK(message, reply);
   }

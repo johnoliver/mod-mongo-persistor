@@ -1,8 +1,10 @@
 .classpath
+.DS_Store
 .gradle
 .idea
 .project
 .settings
+*.iml
 module.iml
 bin
 build
