@@ -52,7 +52,7 @@ public abstract class PersistorTestParent extends TestVerticle {
     config.putString("db_name", System.getProperty("vertx.mongo.database", "test_db"));
     config.putString("host", System.getProperty("vertx.mongo.host", "localhost"));
     config.putNumber("port", Integer.valueOf(System.getProperty("vertx.mongo.port", "27017")));
-    config.putBoolean("use_mongo_types", true);
+    config.putBoolean("use_mongo_types", false);
     String username = System.getProperty("vertx.mongo.username");
     String password = System.getProperty("vertx.mongo.password");
     if (username != null) {

@@ -188,5 +188,49 @@ public class MongoTypesTest extends PersistorTestParent {
       }
     };
   }
+
+  @Test
+  public void canParseObjectId() throws Exception {
+
+    deleteAll(new Handler<Message<JsonObject>>() {
+      public void handle(Message<JsonObject> reply) {
+        assertEquals("ok", reply.body().getString("status"));
+
+        JsonObject createEntryWithOID = new JsonObject()
+                .putString("action", "command")
+                .putString("command", "{insert:\"" + COLLECTION + "\",documents:[{foo:1, bar:2}]}");
+
+        eb.send(ADDRESS, createEntryWithOID, new Handler<Message<JsonObject>>() {
+          public void handle(Message<JsonObject> reply) {
+
+            JsonObject findQuery = new JsonObject()
+                    .putString("collection", COLLECTION)
+                    .putString("action", "find")
+                    .putObject("matcher", new JsonObject()
+                            .putNumber("foo", 1));
+
+            eb.send(ADDRESS, findQuery, new Handler<Message<JsonObject>>() {
+              @Override
+              public void handle(Message<JsonObject> event) {
+
+                JsonObject result = event.body();
+                VertxAssert.assertNotNull(result);
+                VertxAssert.assertNotNull(result);
+                VertxAssert.assertEquals(result.getString("status"), "ok");
+
+                JsonObject entry = result.getArray("results").get(0);
+
+                VertxAssert.assertNotNull(entry.getObject("_id"));
+                VertxAssert.assertNotNull(entry.getObject("_id").getString("$oid"));
+
+                VertxAssert.assertEquals(entry.getNumber("bar"), 2);
+                testComplete();
+              }
+            });
+          }
+        });
+      }
+    });
+  }
 }
 

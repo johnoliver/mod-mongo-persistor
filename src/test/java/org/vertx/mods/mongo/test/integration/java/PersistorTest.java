@@ -92,6 +92,5 @@ public class PersistorTest extends PersistorTestParent {
       }
     });
   }
-
 }
 
