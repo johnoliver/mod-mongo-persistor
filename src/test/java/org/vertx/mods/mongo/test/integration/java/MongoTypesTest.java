@@ -14,7 +14,7 @@ package org.vertx.mods.mongo.test.integration.java;
  * License for the specific language governing permissions and limitations
  * under the License.
  *
- * @author <a href="http://tfox.org">Tim Fox</a>
+ * @author John Oliver
  */
 
 import com.mongodb.BasicDBObject;

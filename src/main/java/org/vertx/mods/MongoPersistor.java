@@ -36,6 +36,7 @@ import java.util.UUID;
  * @author <a href="http://tfox.org">Tim Fox</a>
  * @author Thomas Risberg
  * @author Richard Warburton
+ * @author John Oliver
  */
 public class MongoPersistor extends BusModBase implements Handler<Message<JsonObject>> {
 
@@ -406,7 +407,7 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
     }
     JsonObject reply = new JsonObject();
     if (res != null) {
-      JsonObject m = new JsonObject(res.toMap());
+      JsonObject m = dbObjectToJsonObject(res);
       reply.putObject("result", m);
     }
     sendOK(message, reply);
@@ -581,7 +582,7 @@ public class MongoPersistor extends BusModBase implements Handler<Message<JsonOb
     DBObject commandObject = MongoUtil.convertJsonToBson(command);
     CommandResult result = db.command(commandObject);
 
-    reply.putObject("result", new JsonObject(result.toMap()));
+    reply.putObject("result", dbObjectToJsonObject(result));
     sendOK(message, reply);
   }
 
